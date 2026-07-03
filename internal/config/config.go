@@ -43,7 +43,7 @@ func ConfigFromEnv() (Config, error) {
 		ForwardAddr: os.Getenv("HIIM_FORWARD_ADDR"),
 		AuthUser:    envOr("HIIM_AUTH_USER", "websocket"),
 		AuthPass:    envOr("HIIM_AUTH_PASS", "websocket"),
-		SubCmds:     envOr("HIIM_SUB_CMDS", "0x0102,0x0106,0x0110"),
+		SubCmds:     envOr("HIIM_SUB_CMDS", "0x0102,0x0106,0x0110,0x0302,0x0306,0x030B,0x030C"),
 		MaxConn:     envIntOr("HIIM_MAX_CONN", 100000),
 		LogLevel:    envOr("HIIM_LOG_LEVEL", "info"),
 	}

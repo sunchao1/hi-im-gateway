@@ -15,7 +15,6 @@
 package ws
 
 import (
-	"context"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -74,19 +73,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.connCnt.Add(1)
 
 	go s.writeLoop(raw, c)
-	go s.readLoop(r.Context(), raw, c)
+	go s.readLoop(raw, c)
 }
 
-func (s *Server) readLoop(ctx context.Context, raw *websocket.Conn, c *conn.Conn) {
+func (s *Server) readLoop(raw *websocket.Conn, c *conn.Conn) {
 	defer s.cleanup(raw, c)
 
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
 		_, data, err := raw.ReadMessage()
 		if err != nil {
 			return

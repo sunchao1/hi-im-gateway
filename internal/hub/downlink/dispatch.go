@@ -28,14 +28,17 @@ type Sender interface {
 	Kick(cid uint64)
 }
 
-// Registry wires M5 downlink handlers (beehive UpMesgRegister).
+// Registry wires M5/M6 downlink handlers (beehive UpMesgRegister).
 type Registry struct {
-	tab       *chattab.Table
-	sender    Sender
-	onlineAck *OnlineAckHandler
-	kickH     *KickHandler
-	comm      *CommHandler
-	log       *slog.Logger
+	tab            *chattab.Table
+	sender         Sender
+	onlineAck      *OnlineAckHandler
+	kickH          *KickHandler
+	comm           *CommHandler
+	groupMemberAck *GroupMemberAckHandler
+	groupChat      *GroupChatHandler
+	groupChatAck   *GroupChatAckHandler
+	log            *slog.Logger
 }
 
 // NewRegistry creates downlink handlers.
@@ -44,16 +47,23 @@ func NewRegistry(tab *chattab.Table, sender Sender) *Registry {
 	r.onlineAck = NewOnlineAckHandler(tab, sender)
 	r.kickH = NewKickHandler(tab, sender)
 	r.comm = NewCommHandler(tab, sender)
+	r.groupMemberAck = NewGroupMemberAckHandler(tab, r.comm)
+	r.groupChat = NewGroupChatHandler(tab, sender)
+	r.groupChatAck = NewGroupChatAckHandler(r.comm)
 	return r
 }
 
 // Handlers returns cmd→handler map for hub registration.
 func (r *Registry) Handlers() map[uint32]func(uint32, uint32, []byte) {
 	return map[uint32]func(uint32, uint32, []byte){
-		cmd.CMD_ONLINE_ACK: r.onlineAck.Handle,
-		cmd.CMD_PONG:       r.comm.Handle,
-		protocol.CMDKick:   r.kickH.Handle,
-		protocol.CMDSubAck: r.comm.Handle,
+		cmd.CMD_ONLINE_ACK:      r.onlineAck.Handle,
+		cmd.CMD_PONG:            r.comm.Handle,
+		cmd.CMD_GROUP_CREAT_ACK: r.groupMemberAck.Handle,
+		cmd.CMD_GROUP_JOIN_ACK:  r.groupMemberAck.Handle,
+		cmd.CMD_GROUP_CHAT:      r.groupChat.Handle,
+		cmd.CMD_GROUP_CHAT_ACK:  r.groupChatAck.Handle,
+		protocol.CMDKick:        r.kickH.Handle,
+		protocol.CMDSubAck:      r.comm.Handle,
 	}
 }
 

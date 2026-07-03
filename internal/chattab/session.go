@@ -26,6 +26,7 @@ type Table struct {
 	mu       sync.RWMutex
 	sessions [sessionMaxLen]map[uint64]map[uint64]any
 	sidToCid map[uint64]uint64
+	imGroup  *ImGroup
 }
 
 // New creates an empty ChatTab.
