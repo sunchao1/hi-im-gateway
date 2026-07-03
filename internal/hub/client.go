@@ -22,7 +22,11 @@ import (
 	"strings"
 	"sync"
 
+	imv1 "github.com/sunchao1/hi-im-api/gen/go/im/v1"
+	imcmd "github.com/sunchao1/hi-im-api/pkg/im/cmd"
+	"github.com/sunchao1/hi-im-api/pkg/im/header"
 	"github.com/sunchao1/hi-im-hubclient/pkg/hubclient"
+	"google.golang.org/protobuf/proto"
 )
 
 // Handler processes a downlink IM frame from Hub async_send.
@@ -38,15 +42,19 @@ type Client struct {
 }
 
 // NewClient builds a hub FORWARD client.
-func NewClient(cfg hubclient.Config) (*Client, error) {
-	c, err := hubclient.New(&cfg)
+func NewClient(cfg hubclient.Config, log *slog.Logger) (*Client, error) {
+	if log == nil {
+		log = slog.Default()
+	}
+	opts := []hubclient.Option{hubclient.WithLogger(log)}
+	c, err := hubclient.New(&cfg, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return &Client{
 		inner:    c,
 		handlers: make(map[uint32]Handler),
-		log:      slog.Default(),
+		log:      log,
 	}, nil
 }
 
@@ -67,6 +75,14 @@ func (c *Client) RegisterDefaultDownlink(h Handler) error {
 }
 
 func (c *Client) dispatch(cmd, origNid uint32, payload []byte) {
+	if cmd == imcmd.CMD_GROUP_CHAT {
+		text, seq := traceGroupChat(payload)
+		c.log.Info("hub tcp recv",
+			"cmd", fmt.Sprintf("0x%04X", cmd),
+			"origNid", origNid,
+			"seq", seq,
+			"text", text)
+	}
 	c.mu.RLock()
 	h := c.handlers[cmd]
 	if h == nil {
@@ -118,6 +134,21 @@ func ConfigFromEnv(nid uint32, subCmdsCSV, authUser, authPass, forwardAddr strin
 	}
 	cfg.Subscribe = cmds
 	return cfg, nil
+}
+
+func traceGroupChat(payload []byte) (text string, seq uint64) {
+	if len(payload) < header.Size {
+		return "", 0
+	}
+	hdr, err := header.Unmarshal(payload[:header.Size])
+	if err != nil {
+		return "", 0
+	}
+	req := &imv1.GroupChat{}
+	if err := proto.Unmarshal(payload[header.Size:], req); err != nil {
+		return "", hdr.Seq
+	}
+	return req.GetText(), hdr.Seq
 }
 
 func parseHexList(s string) ([]uint32, error) {

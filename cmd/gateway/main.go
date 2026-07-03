@@ -52,7 +52,7 @@ func main() {
 		log.Error("hub config failed", "err", err)
 		os.Exit(1)
 	}
-	hubClient, err := hub.NewClient(*hubCfg)
+	hubClient, err := hub.NewClient(*hubCfg, log)
 	if err != nil {
 		log.Error("hub client init failed", "err", err)
 		os.Exit(1)
@@ -63,7 +63,7 @@ func main() {
 	wsServer := ws.NewServer(cfg, tab, dispatch)
 	kickFn.kick = wsServer.Kick
 
-	dl := downlink.NewRegistry(tab, wsServer)
+	dl := downlink.NewRegistry(cfg, tab, wsServer, wsServer)
 	for cmd, handler := range dl.Handlers() {
 		_ = hubClient.RegisterDownlink(cmd, handler)
 	}

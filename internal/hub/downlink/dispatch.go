@@ -19,6 +19,7 @@ import (
 
 	"github.com/sunchao1/hi-im-api/pkg/im/cmd"
 	"github.com/sunchao1/hi-im-gateway/internal/chattab"
+	"github.com/sunchao1/hi-im-gateway/internal/config"
 	"github.com/sunchao1/hi-im-gateway/internal/protocol"
 )
 
@@ -26,6 +27,11 @@ import (
 type Sender interface {
 	Send(cid uint64, data []byte) bool
 	Kick(cid uint64)
+}
+
+// Poster queues downlink frames without blocking hub handlers.
+type Poster interface {
+	PostDownlink(cid uint64, data []byte, meta string) bool
 }
 
 // Registry wires M5/M6 downlink handlers (beehive UpMesgRegister).
@@ -42,13 +48,13 @@ type Registry struct {
 }
 
 // NewRegistry creates downlink handlers.
-func NewRegistry(tab *chattab.Table, sender Sender) *Registry {
+func NewRegistry(cfg config.Config, tab *chattab.Table, sender Sender, poster Poster) *Registry {
 	r := &Registry{tab: tab, sender: sender, log: slog.Default()}
 	r.onlineAck = NewOnlineAckHandler(tab, sender)
 	r.kickH = NewKickHandler(tab, sender)
 	r.comm = NewCommHandler(tab, sender)
 	r.groupMemberAck = NewGroupMemberAckHandler(tab, r.comm)
-	r.groupChat = NewGroupChatHandler(tab, sender)
+	r.groupChat = NewGroupChatHandler(cfg, tab, poster)
 	r.groupChatAck = NewGroupChatAckHandler(r.comm)
 	return r
 }

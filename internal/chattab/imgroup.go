@@ -61,6 +61,12 @@ func (g *ImGroup) join(gid, sid, cid uint64) {
 	if g.members[gid] == nil {
 		g.members[gid] = make(map[sessionKey]struct{})
 	}
+	// Replace stale cid for the same sid (reconnect / duplicate ONLINE).
+	for k := range g.members[gid] {
+		if k.sid == sid {
+			delete(g.members[gid], k)
+		}
+	}
 	g.members[gid][sessionKey{sid: sid, cid: cid}] = struct{}{}
 }
 

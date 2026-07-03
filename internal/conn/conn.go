@@ -16,6 +16,7 @@
 package conn
 
 import (
+	"sync"
 	"sync/atomic"
 )
 
@@ -31,19 +32,20 @@ const (
 
 // Conn holds per-WebSocket session state.
 type Conn struct {
-	cid    uint64
-	sid    uint64
-	status atomic.Int32
-	seq    uint64
-	writeC chan []byte
-	done   chan struct{}
+	cid       uint64
+	sid       uint64
+	status    atomic.Int32
+	seq       uint64
+	writeC    chan []byte
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // New allocates a connection with the given cid.
 func New(cid uint64) *Conn {
 	c := &Conn{
 		cid:    cid,
-		writeC: make(chan []byte, 64),
+		writeC: make(chan []byte, 512),
 		done:   make(chan struct{}),
 	}
 	c.SetStatus(StatusReady)
@@ -77,6 +79,13 @@ func (c *Conn) Seq() uint64 {
 	return atomic.LoadUint64(&c.seq)
 }
 
+// InitSeq sets seq when server ack seq does not advance past client seq (demo/reconnect).
+func (c *Conn) InitSeq(seq uint64) {
+	if seq > 0 {
+		atomic.StoreUint64(&c.seq, seq)
+	}
+}
+
 // SetSeq initializes or advances seq (CAS monotonic).
 func (c *Conn) SetSeq(seq uint64) bool {
 	for {
@@ -90,18 +99,21 @@ func (c *Conn) SetSeq(seq uint64) bool {
 	}
 }
 
-// EnqueueWrite sends a frame to the write goroutine.
+// EnqueueWrite sends a frame to the write goroutine (copies data).
 func (c *Conn) EnqueueWrite(data []byte) bool {
+	buf := append([]byte(nil), data...)
 	select {
 	case <-c.done:
 		return false
-	case c.writeC <- data:
+	case c.writeC <- buf:
 		return true
 	}
 }
 
-// Close signals connection shutdown.
-func (c *Conn) Close() { close(c.done) }
+// Close signals connection shutdown (idempotent).
+func (c *Conn) Close() {
+	c.closeOnce.Do(func() { close(c.done) })
+}
 
 // WriteChan exposes the write channel for the server write loop.
 func (c *Conn) WriteChan() <-chan []byte { return c.writeC }

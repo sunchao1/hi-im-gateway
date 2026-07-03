@@ -39,19 +39,23 @@ type Server struct {
 	dispatch *uplink.Dispatcher
 	log      *slog.Logger
 
-	nextCid atomic.Uint64
-	conns   sync.Map
-	connCnt atomic.Int64
+	nextCid   atomic.Uint64
+	conns     sync.Map
+	connCnt   atomic.Int64
+	downlinkQ chan downlinkItem
 }
 
 // NewServer creates a WebSocket server.
 func NewServer(cfg config.Config, tab *chattab.Table, dispatch *uplink.Dispatcher) *Server {
-	return &Server{
-		cfg:      cfg,
-		tab:      tab,
-		dispatch: dispatch,
-		log:      slog.Default(),
+	s := &Server{
+		cfg:       cfg,
+		tab:       tab,
+		dispatch:  dispatch,
+		log:       slog.Default(),
+		downlinkQ: make(chan downlinkItem, 4096),
 	}
+	go s.downlinkLoop()
+	return s
 }
 
 // ServeHTTP upgrades HTTP to WebSocket and starts read/write loops.
@@ -93,6 +97,7 @@ func (s *Server) readLoop(raw *websocket.Conn, c *conn.Conn) {
 }
 
 func (s *Server) writeLoop(raw *websocket.Conn, c *conn.Conn) {
+	defer s.cleanup(raw, c)
 	for {
 		select {
 		case data, ok := <-c.WriteChan():
@@ -100,8 +105,10 @@ func (s *Server) writeLoop(raw *websocket.Conn, c *conn.Conn) {
 				return
 			}
 			if err := raw.WriteMessage(websocket.BinaryMessage, data); err != nil {
+				s.log.Warn("ws write failed", "cid", c.Cid(), "sid", c.Sid(), "len", len(data), "err", err)
 				return
 			}
+			s.log.Info("ws write ok", "cid", c.Cid(), "sid", c.Sid(), "len", len(data))
 		case <-c.Closed():
 			return
 		}
@@ -116,6 +123,11 @@ func (s *Server) cleanup(raw *websocket.Conn, c *conn.Conn) {
 		s.tab.SessionDel(c.Sid(), c.Cid())
 	}
 	_ = raw.Close()
+}
+
+// DownlinkPoster is implemented by ws.Server for non-blocking group fan-out.
+type DownlinkPoster interface {
+	PostDownlink(cid uint64, data []byte, meta string) bool
 }
 
 // Send delivers a downlink frame to the connection identified by cid.

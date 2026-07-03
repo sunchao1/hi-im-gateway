@@ -41,7 +41,7 @@ func NewCommHandler(cfg config.Config, pub Publisher, kick Kicker) *CommHandler 
 func (h *CommHandler) Handle(c *conn.Conn, cmd uint32, frame []byte) {
 	if !c.IsStatus(conn.StatusLogin) {
 		h.kick.Kick(c.Cid())
-		h.log.Debug("kick: not login", "cid", c.Cid(), "cmd", cmd)
+		h.log.Warn("kick: not login", "cid", c.Cid(), "cmd", cmd, "status", c.GetStatus())
 		return
 	}
 
@@ -55,7 +55,9 @@ func (h *CommHandler) Handle(c *conn.Conn, cmd uint32, frame []byte) {
 	if err != nil {
 		return
 	}
-	_ = h.pub.Publish(cmd, out)
+	if err := h.pub.Publish(cmd, out); err != nil {
+		h.log.Warn("comm: publish failed", "cmd", cmd, "cid", c.Cid(), "err", err)
+	}
 }
 
 func repack(hdr *header.Header, body []byte) ([]byte, error) {

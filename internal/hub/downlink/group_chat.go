@@ -15,6 +15,7 @@
 package downlink
 
 import (
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
@@ -23,6 +24,7 @@ import (
 	"github.com/sunchao1/hi-im-api/pkg/im/cmd"
 	"github.com/sunchao1/hi-im-api/pkg/im/header"
 	"github.com/sunchao1/hi-im-gateway/internal/chattab"
+	"github.com/sunchao1/hi-im-gateway/internal/config"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -60,13 +62,30 @@ func (h *GroupMemberAckHandler) Handle(cmdID, _ uint32, payload []byte) {
 
 	if ack.GetCode() == 0 {
 		if gid := parseGIDFromAck(ack.GetErrmsg()); gid > 0 {
-			cid := h.tab.GetCidBySid(hdr.Sid)
-			if cid != 0 {
+			if cid := resolveConnCid(h.tab, hdr); cid != 0 {
 				h.tab.ImGroupJoin(gid, hdr.Sid, cid)
+				h.log.Info("ImGroupJoin", "gid", gid, "sid", hdr.Sid, "cid", cid, "cmd", fmt.Sprintf("0x%04X", cmdID))
+			} else {
+				h.log.Warn("group member ack: missing cid for ImGroupJoin", "sid", hdr.Sid, "gid", gid, "cmd", fmt.Sprintf("0x%04X", cmdID))
 			}
 		}
 	}
 	h.comm.Handle(cmdID, 0, payload)
+}
+
+// resolveConnCid picks the live WS cid for sid (prefer post-ONLINE mapping over echoed hdr.Cid).
+func resolveConnCid(tab *chattab.Table, hdr *header.Header) uint64 {
+	if hdr == nil {
+		return 0
+	}
+	if cid := tab.GetCidBySid(hdr.Sid); cid != 0 {
+		return cid
+	}
+	if hdr.Cid != 0 {
+		return hdr.Cid
+	}
+	cid, _ := tab.SessionFindBySid(hdr.Sid)
+	return cid
 }
 
 func parseGIDFromAck(errmsg string) uint64 {
@@ -81,26 +100,29 @@ func parseGIDFromAck(errmsg string) uint64 {
 
 // GroupChatHandler fan-outs GROUP-CHAT to all local ImGroup members (beehive LsndUpMesgGroupChatHandler).
 type GroupChatHandler struct {
+	cfg    config.Config
 	tab    *chattab.Table
-	sender Sender
+	poster Poster
 	log    *slog.Logger
 }
 
 // NewGroupChatHandler creates a GROUP-CHAT downlink handler.
-func NewGroupChatHandler(tab *chattab.Table, sender Sender) *GroupChatHandler {
-	return &GroupChatHandler{tab: tab, sender: sender, log: slog.Default()}
+func NewGroupChatHandler(cfg config.Config, tab *chattab.Table, poster Poster) *GroupChatHandler {
+	return &GroupChatHandler{cfg: cfg, tab: tab, poster: poster, log: slog.Default()}
 }
 
 // Handle delivers GROUP-CHAT to every conn in the gid ImGroup table.
-func (h *GroupChatHandler) Handle(_ uint32, _ uint32, payload []byte) {
+func (h *GroupChatHandler) Handle(cmdID, _ uint32, payload []byte) {
 	if len(payload) < header.Size {
 		return
 	}
-	if _, err := header.Unmarshal(payload[:header.Size]); err != nil {
+	hdr, err := header.Unmarshal(payload[:header.Size])
+	if err != nil {
 		return
 	}
+	body := append([]byte(nil), payload[header.Size:]...)
 	req := &imv1.GroupChat{}
-	if err := proto.Unmarshal(payload[header.Size:], req); err != nil {
+	if err := proto.Unmarshal(body, req); err != nil {
 		h.log.Warn("group-chat downlink: bad body", "err", err)
 		return
 	}
@@ -108,9 +130,55 @@ func (h *GroupChatHandler) Handle(_ uint32, _ uint32, payload []byte) {
 	if gid == 0 {
 		return
 	}
-	h.tab.TravImGroupSession(gid, func(_ uint64, cid uint64) {
-		_ = h.sender.Send(cid, payload)
+	text := req.GetText()
+	members := 0
+	h.tab.TravImGroupSession(gid, func(sid, imCid uint64) {
+		members++
+		cid := resolveConnCid(h.tab, &header.Header{Sid: sid, Cid: imCid})
+		if cid == 0 {
+			h.log.Warn("group-chat downlink: no live cid",
+				"gid", gid, "sid", sid, "imCid", imCid, "text", text, "seq", hdr.Seq)
+			return
+		}
+		frame, err := repackWSFrame(h.cfg.NID, cmdID, hdr, cid, body)
+		if err != nil {
+			h.log.Warn("group-chat downlink: repack failed", "err", err, "seq", hdr.Seq)
+			return
+		}
+		meta := fmt.Sprintf("gid=%d sid=%d seq=%d text=%s", gid, sid, hdr.Seq, text)
+		if !h.poster.PostDownlink(cid, frame, meta) {
+			h.log.Warn("group-chat downlink: queue full",
+				"gid", gid, "sid", sid, "cid", cid, "text", text, "seq", hdr.Seq)
+		}
 	})
+	if members == 0 {
+		h.log.Warn("group-chat downlink: no ImGroup members", "gid", gid, "text", text, "seq", hdr.Seq)
+		return
+	}
+	h.log.Info("group-chat downlink: recv",
+		"gid", gid, "uid", req.GetUid(), "text", text, "seq", hdr.Seq, "members", members)
+}
+
+func repackWSFrame(gatewayNID, cmdID uint32, hdr *header.Header, cid uint64, body []byte) ([]byte, error) {
+	if cmdID == 0 {
+		cmdID = cmd.CMD_GROUP_CHAT
+	}
+	out := &header.Header{
+		Cmd:    cmdID,
+		Length: uint32(len(body)),
+		Sid:    hdr.Sid,
+		Cid:    cid,
+		Nid:    gatewayNID,
+		Seq:    hdr.Seq,
+	}
+	headBuf, err := out.Pack()
+	if err != nil {
+		return nil, err
+	}
+	frame := make([]byte, len(headBuf)+len(body))
+	copy(frame, headBuf)
+	copy(frame[len(headBuf):], body)
+	return frame, nil
 }
 
 // GroupChatAckHandler forwards GROUP-CHAT-ACK to sender via CommHandler path.

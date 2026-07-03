@@ -55,6 +55,7 @@ func (h *OnlineAckHandler) Handle(_ uint32, _ uint32, payload []byte) {
 	cid := hdr.Cid
 	var ack imv1.OnlineAck
 	if err := proto.Unmarshal(payload[header.Size:], &ack); err != nil {
+		h.log.Warn("online_ack: bad body", "cid", cid, "err", err)
 		h.sendAndKick(cid, payload)
 		return
 	}
@@ -64,8 +65,19 @@ func (h *OnlineAckHandler) Handle(_ uint32, _ uint32, payload []byte) {
 		return
 	}
 
-	extra := h.tab.SessionGetParam(ack.GetSid(), cid)
+	sid := ack.GetSid()
+	if sid == 0 {
+		sid = hdr.Sid
+	}
+
+	extra := h.tab.SessionGetParam(sid, cid)
 	if extra == nil {
+		var found any
+		cid, found = h.tab.SessionFindBySid(sid)
+		extra = found
+	}
+	if extra == nil {
+		h.log.Warn("online_ack: session not found", "sid", sid, "hdrCid", hdr.Cid)
 		h.sendAndKick(cid, payload)
 		return
 	}
@@ -74,23 +86,27 @@ func (h *OnlineAckHandler) Handle(_ uint32, _ uint32, payload []byte) {
 		h.sendAndKick(cid, payload)
 		return
 	}
-	if !c.SetSeq(ack.GetSeq()) {
-		h.sendAndKick(cid, payload)
-		return
+	if ack.GetSeq() > 0 && !c.SetSeq(ack.GetSeq()) {
+		// Do not kick: client already relies on ACK; kicking breaks GROUP-CREAT demo.
+		c.InitSeq(ack.GetSeq())
+		h.log.Warn("online_ack: seq resync", "cid", c.Cid(), "sid", sid, "ackSeq", ack.GetSeq())
 	}
 
 	c.SetStatus(conn.StatusLogin)
 
-	oldCid := h.tab.GetCidBySid(ack.GetSid())
-	if oldCid != 0 && oldCid != cid {
+	oldCid := h.tab.GetCidBySid(sid)
+	if oldCid != 0 && oldCid != c.Cid() {
 		h.sender.Kick(oldCid)
 	}
-	h.tab.SessionSetCid(ack.GetSid(), cid)
+	h.tab.SessionSetCid(sid, c.Cid())
 
-	_ = h.sender.Send(cid, payload)
+	_ = h.sender.Send(c.Cid(), payload)
 }
 
 func (h *OnlineAckHandler) sendAndKick(cid uint64, payload []byte) {
+	if cid == 0 {
+		return
+	}
 	_ = h.sender.Send(cid, payload)
 	h.sender.Kick(cid)
 }

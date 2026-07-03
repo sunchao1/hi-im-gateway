@@ -41,17 +41,18 @@ func NewOnlineHandler(cfg config.Config, tab *chattab.Table, pub Publisher) *Onl
 // Handle forwards ONLINE to Hub FORWARD and enters CHECK state.
 func (h *OnlineHandler) Handle(c *conn.Conn, cmd uint32, frame []byte) {
 	if !c.IsStatus(conn.StatusReady) && !c.IsStatus(conn.StatusCheck) {
-		h.log.Debug("drop online: bad status", "cid", c.Cid(), "status", c.GetStatus())
+		h.log.Warn("drop online: bad status", "cid", c.Cid(), "status", c.GetStatus())
 		return
 	}
 
 	hdr, err := header.Unmarshal(frame[:header.Size])
 	if err != nil {
+		h.log.Warn("online: bad header", "cid", c.Cid(), "err", err)
 		return
 	}
 
 	if h.tab.SessionGetParam(hdr.Sid, c.Cid()) != nil {
-		h.log.Debug("drop online: duplicate", "cid", c.Cid(), "sid", hdr.Sid)
+		h.log.Warn("drop online: duplicate", "cid", c.Cid(), "sid", hdr.Sid)
 		return
 	}
 
@@ -67,8 +68,9 @@ func (h *OnlineHandler) Handle(c *conn.Conn, cmd uint32, frame []byte) {
 	}
 
 	if err := h.pub.Publish(cmd, out); err != nil {
-		h.log.Warn("online: publish failed", "err", err)
+		h.log.Warn("online: publish failed", "cid", c.Cid(), "sid", hdr.Sid, "err", err)
 		return
 	}
+	h.log.Info("online: published", "cid", c.Cid(), "sid", hdr.Sid, "nid", hdr.Nid)
 	c.SetStatus(conn.StatusCheck)
 }

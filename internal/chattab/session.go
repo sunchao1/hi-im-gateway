@@ -80,6 +80,24 @@ func (t *Table) SessionSetCid(sid, cid uint64) {
 	t.sidToCid[sid] = cid
 }
 
+// SessionFindBySid returns the first cid+conn bound to sid (ONLINE CHECK state).
+func (t *Table) SessionFindBySid(sid uint64) (uint64, any) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	idx := shard(sid)
+	if t.sessions[idx] == nil {
+		return 0, nil
+	}
+	m := t.sessions[idx][sid]
+	if m == nil {
+		return 0, nil
+	}
+	for cid, conn := range m {
+		return cid, conn
+	}
+	return 0, nil
+}
+
 // SessionDel removes sid+cid binding on connection close.
 func (t *Table) SessionDel(sid, cid uint64) {
 	t.mu.Lock()
