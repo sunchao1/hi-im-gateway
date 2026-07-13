@@ -134,13 +134,18 @@ type DownlinkPoster interface {
 func (s *Server) Send(cid uint64, data []byte) bool {
 	v, ok := s.conns.Load(cid)
 	if !ok {
+		s.log.Warn("downlink send: unknown cid", "cid", cid)
 		return false
 	}
 	conn, ok := v.(*conn.Conn)
 	if !ok {
 		return false
 	}
-	return conn.EnqueueWrite(data)
+	if !conn.EnqueueWrite(data) {
+		s.log.Warn("downlink send: write queue full", "cid", cid, "sid", conn.Sid())
+		return false
+	}
+	return true
 }
 
 // Kick closes the connection identified by cid.

@@ -45,7 +45,7 @@ type Conn struct {
 func New(cid uint64) *Conn {
 	c := &Conn{
 		cid:    cid,
-		writeC: make(chan []byte, 512),
+		writeC: make(chan []byte, 2048),
 		done:   make(chan struct{}),
 	}
 	c.SetStatus(StatusReady)
@@ -100,6 +100,8 @@ func (c *Conn) SetSeq(seq uint64) bool {
 }
 
 // EnqueueWrite sends a frame to the write goroutine (copies data).
+// Non-blocking: returns false when the per-conn queue is full so downlinkLoop
+// cannot stall on one slow WebSocket consumer.
 func (c *Conn) EnqueueWrite(data []byte) bool {
 	buf := append([]byte(nil), data...)
 	select {
@@ -107,6 +109,8 @@ func (c *Conn) EnqueueWrite(data []byte) bool {
 		return false
 	case c.writeC <- buf:
 		return true
+	default:
+		return false
 	}
 }
 
